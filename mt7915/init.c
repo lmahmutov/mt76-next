@@ -355,6 +355,9 @@ mt7915_init_wiphy(struct ieee80211_hw *hw)
 	wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_FILS_DISCOVERY);
 	wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_ACK_SIGNAL_SUPPORT);
 
+	if (!is_mt7915(&dev->mt76))
+		wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_STA_TX_PWR);
+
 	if (!mdev->dev->of_node ||
 	    !of_property_read_bool(mdev->dev->of_node,
 				   "mediatek,disable-radar-background"))
@@ -369,9 +372,6 @@ mt7915_init_wiphy(struct ieee80211_hw *hw)
 	ieee80211_hw_set(hw, SUPPORTS_VHT_EXT_NSS_BW);
 
 	hw->max_tx_fragments = 4;
-
-	if (!phy->dev->dbdc_support)
-		wiphy->txq_memory_limit = 32 << 20; /* 32 MiB */
 
 	if (phy->mt76->cap.has_2ghz) {
 		phy->mt76->sband_2g.sband.ht_cap.cap |=
@@ -540,7 +540,7 @@ mt7915_alloc_ext_phy(struct mt7915_dev *dev)
 	phy->mt76 = mphy;
 
 	/* Bind main phy to band0 and ext_phy to band1 for dbdc case */
-	phy->band_idx = 1;
+	phy->mt76->band_idx = 1;
 
 	return phy;
 }
@@ -660,7 +660,7 @@ static bool mt7915_band_config(struct mt7915_dev *dev)
 {
 	bool ret = true;
 
-	dev->phy.band_idx = 0;
+	dev->phy.mt76->band_idx = 0;
 
 	if (is_mt7986(&dev->mt76)) {
 		u32 sku = mt7915_check_adie(dev, true);
@@ -671,7 +671,7 @@ static bool mt7915_band_config(struct mt7915_dev *dev)
 		 * dbdc is disabled.
 		 */
 		if (sku == MT7975_ONE_ADIE || sku == MT7976_ONE_ADIE) {
-			dev->phy.band_idx = 1;
+			dev->phy.mt76->band_idx = 1;
 			ret = false;
 		}
 	} else {
@@ -1019,7 +1019,8 @@ mt7915_init_he_caps(struct mt7915_phy *phy, enum nl80211_band band,
 			mt7915_gen_ppe_thresh(he_cap->ppe_thres, nss);
 		} else {
 			he_cap_elem->phy_cap_info[9] |=
-				IEEE80211_HE_PHY_CAP9_NOMIMAL_PKT_PADDING_16US;
+				u8_encode_bits(IEEE80211_HE_PHY_CAP9_NOMINAL_PKT_PADDING_16US,
+					       IEEE80211_HE_PHY_CAP9_NOMINAL_PKT_PADDING_MASK);
 		}
 
 		if (band == NL80211_BAND_6GHZ) {

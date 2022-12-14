@@ -129,6 +129,17 @@ struct mt7915_mcu_background_chain_ctrl {
 	u8 rsv[2];
 } __packed;
 
+struct mt7915_mcu_sr_ctrl {
+	u8 action;
+	u8 argnum;
+	u8 band_idx;
+	u8 status;
+	u8 drop_ta_idx;
+	u8 sta_idx;	/* 256 sta */
+	u8 rsv[2];
+	__le32 val;
+} __packed;
+
 struct mt7915_mcu_eeprom {
 	u8 buffer_mode;
 	u8 format;
@@ -172,6 +183,13 @@ enum mt7915_chan_mib_offs {
 	MIB_OBSS_AIRTIME_V2 = 490,
 	MIB_NON_WIFI_TIME_V2
 };
+
+struct mt7915_mcu_txpower_sku {
+	u8 format_id;
+	u8 limit_type;
+	u8 band_idx;
+	s8 txpower_sku[MT7915_SKU_RATE_NUM];
+} __packed;
 
 struct edca {
 	u8 queue;
@@ -409,6 +427,25 @@ enum {
 #define RATE_CFG_HE_LTF			GENMASK(31, 28)
 
 enum {
+	TX_POWER_LIMIT_ENABLE,
+	TX_POWER_LIMIT_TABLE = 0x4,
+	TX_POWER_LIMIT_INFO = 0x7,
+	TX_POWER_LIMIT_FRAME = 0x11,
+	TX_POWER_LIMIT_FRAME_MIN = 0x12,
+};
+
+enum {
+	SPR_ENABLE = 0x1,
+	SPR_ENABLE_SD = 0x3,
+	SPR_ENABLE_MODE = 0x5,
+	SPR_ENABLE_DPD = 0x23,
+	SPR_ENABLE_TX = 0x25,
+	SPR_SET_SRG_BITMAP = 0x80,
+	SPR_SET_PARAM = 0xc2,
+	SPR_SET_SIGA = 0xdc,
+};
+
+enum {
 	THERMAL_PROTECT_PARAMETER_CTRL,
 	THERMAL_PROTECT_BASIC_INFO,
 	THERMAL_PROTECT_ENABLE,
@@ -478,5 +515,17 @@ enum {
 					 sizeof(struct bss_info_bcn_mbss) + \
 					 sizeof(struct bss_info_bcn_cont) + \
 					 sizeof(struct bss_info_inband_discovery))
+
+static inline s8
+mt7915_get_power_bound(struct mt7915_phy *phy, s8 txpower)
+{
+	struct mt76_phy *mphy = phy->mt76;
+	int n_chains = hweight8(mphy->antenna_mask);
+
+	txpower = mt76_get_sar_power(mphy, mphy->chandef.chan, txpower * 2);
+	txpower -= mt76_tx_power_nss_delta(n_chains);
+
+	return txpower;
+}
 
 #endif

@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-only
-EXTRA_CFLAGS += -Werror -DCONFIG_MT76_LEDS
-obj-m := mt76.o
+obj-$(CONFIG_MT76_CORE) += mt76.o
 obj-$(CONFIG_MT76_USB) += mt76-usb.o
 obj-$(CONFIG_MT76_SDIO) += mt76-sdio.o
 obj-$(CONFIG_MT76x02_LIB) += mt76x02-lib.o
@@ -36,3 +35,4 @@ obj-$(CONFIG_MT7603E) += mt7603/
 obj-$(CONFIG_MT7615_COMMON) += mt7615/
 obj-$(CONFIG_MT7915E) += mt7915/
 obj-$(CONFIG_MT7921_COMMON) += mt7921/
+obj-$(CONFIG_MT7996E) += mt7996/

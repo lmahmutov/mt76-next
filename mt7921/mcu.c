@@ -155,6 +155,29 @@ void mt7921_mcu_set_suspend_iter(void *priv, u8 *mac, struct ieee80211_vif *vif)
 #endif /* CONFIG_PM */
 
 static void
+mt7921_mcu_uni_roc_event(struct mt7921_dev *dev, struct sk_buff *skb)
+{
+	struct mt7921_roc_grant_tlv *grant;
+	struct mt76_connac2_mcu_rxd *rxd;
+	int duration;
+
+	rxd = (struct mt76_connac2_mcu_rxd *)skb->data;
+	grant = (struct mt7921_roc_grant_tlv *)(rxd->tlv + 4);
+
+	/* should never happen */
+	WARN_ON_ONCE((le16_to_cpu(grant->tag) != UNI_EVENT_ROC_GRANT));
+
+	if (grant->reqtype == MT7921_ROC_REQ_ROC)
+		ieee80211_ready_on_channel(dev->mt76.phy.hw);
+
+	dev->phy.roc_grant = true;
+	wake_up(&dev->phy.roc_wait);
+	duration = le32_to_cpu(grant->max_interval);
+	mod_timer(&dev->phy.roc_timer,
+		  round_jiffies_up(jiffies + msecs_to_jiffies(duration)));
+}
+
+static void
 mt7921_mcu_scan_event(struct mt7921_dev *dev, struct sk_buff *skb)
 {
 	struct mt76_phy *mphy = &dev->mt76.phy;
@@ -295,6 +318,7 @@ mt7921_mcu_uni_rx_unsolicited_event(struct mt7921_dev *dev,
 
 	switch (rxd->eid) {
 	case MCU_UNI_EVENT_ROC:
+		mt7921_mcu_uni_roc_event(dev, skb);
 		break;
 	default:
 		break;
@@ -838,7 +862,7 @@ int mt7921_mcu_uni_bss_ps(struct mt7921_dev *dev, struct ieee80211_vif *vif)
 		.ps = {
 			.tag = cpu_to_le16(UNI_BSS_INFO_PS),
 			.len = cpu_to_le16(sizeof(struct ps_tlv)),
-			.ps_state = vif->bss_conf.ps ? 2 : 0,
+			.ps_state = vif->cfg.ps ? 2 : 0,
 		},
 	};
 
@@ -902,7 +926,7 @@ mt7921_mcu_set_bss_pm(struct mt7921_dev *dev, struct ieee80211_vif *vif,
 		u8 pad;
 	} req = {
 		.bss_idx = mvif->mt76.idx,
-		.aid = cpu_to_le16(vif->bss_conf.aid),
+		.aid = cpu_to_le16(vif->cfg.aid),
 		.dtim_period = vif->bss_conf.dtim_period,
 		.bcn_interval = cpu_to_le16(vif->bss_conf.beacon_int),
 	};
@@ -1119,7 +1143,7 @@ mt7921_mcu_uni_add_beacon_offload(struct mt7921_dev *dev,
 	if (!enable)
 		return -EOPNOTSUPP;
 
-	skb = ieee80211_beacon_get_template(mt76_hw(dev), vif, &offs);
+	skb = ieee80211_beacon_get_template(mt76_hw(dev), vif, &offs, 0);
 	if (!skb)
 		return -EINVAL;
 

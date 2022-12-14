@@ -572,6 +572,7 @@ mt76_alloc_device(struct device *pdev, unsigned int size,
 	spin_lock_init(&dev->lock);
 	spin_lock_init(&dev->cc_lock);
 	spin_lock_init(&dev->status_lock);
+	spin_lock_init(&dev->wed_lock);
 	mutex_init(&dev->mutex);
 	init_waitqueue_head(&dev->tx_wait);
 
@@ -594,9 +595,13 @@ mt76_alloc_device(struct device *pdev, unsigned int size,
 	spin_lock_init(&dev->token_lock);
 	idr_init(&dev->token);
 
+	spin_lock_init(&dev->rx_token_lock);
+	idr_init(&dev->rx_token);
+
 	INIT_LIST_HEAD(&dev->wcid_list);
 
 	INIT_LIST_HEAD(&dev->txwi_cache);
+	INIT_LIST_HEAD(&dev->rxwi_cache);
 	dev->token_size = dev->drv->token_size;
 
 	for (i = 0; i < ARRAY_SIZE(dev->q_rx); i++)
@@ -1292,7 +1297,10 @@ void mt76_rx_poll_complete(struct mt76_dev *dev, enum mt76_rxq_id q,
 
 	while ((skb = __skb_dequeue(&dev->rx_skb[q])) != NULL) {
 		mt76_check_sta(dev, skb);
-		mt76_rx_aggr_reorder(skb, &frames);
+		if (mtk_wed_device_active(&dev->mmio.wed))
+			__skb_queue_tail(&frames, skb);
+		else
+			mt76_rx_aggr_reorder(skb, &frames);
 	}
 
 	mt76_rx_complete(dev, &frames, napi);
@@ -1474,7 +1482,7 @@ EXPORT_SYMBOL_GPL(mt76_get_sar_power);
 static void
 __mt76_csa_finish(void *priv, u8 *mac, struct ieee80211_vif *vif)
 {
-	if (vif->csa_active && ieee80211_beacon_cntdwn_is_complete(vif))
+	if (vif->bss_conf.csa_active && ieee80211_beacon_cntdwn_is_complete(vif))
 		ieee80211_csa_finish(vif);
 }
 
@@ -1496,7 +1504,7 @@ __mt76_csa_check(void *priv, u8 *mac, struct ieee80211_vif *vif)
 {
 	struct mt76_dev *dev = priv;
 
-	if (!vif->csa_active)
+	if (!vif->bss_conf.csa_active)
 		return;
 
 	dev->csa_complete |= ieee80211_beacon_cntdwn_is_complete(vif);

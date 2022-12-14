@@ -13,10 +13,14 @@
 #include "../trace.h"
 
 static const struct pci_device_id mt7921_pci_device_table[] = {
-	{ PCI_DEVICE(PCI_VENDOR_ID_MEDIATEK, 0x7961) },
-	{ PCI_DEVICE(PCI_VENDOR_ID_MEDIATEK, 0x7922) },
-	{ PCI_DEVICE(PCI_VENDOR_ID_MEDIATEK, 0x0608) },
-	{ PCI_DEVICE(PCI_VENDOR_ID_MEDIATEK, 0x0616) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_MEDIATEK, 0x7961),
+		.driver_data = (kernel_ulong_t)MT7921_FIRMWARE_WM },
+	{ PCI_DEVICE(PCI_VENDOR_ID_MEDIATEK, 0x7922),
+		.driver_data = (kernel_ulong_t)MT7922_FIRMWARE_WM },
+	{ PCI_DEVICE(PCI_VENDOR_ID_MEDIATEK, 0x0608),
+		.driver_data = (kernel_ulong_t)MT7921_FIRMWARE_WM },
+	{ PCI_DEVICE(PCI_VENDOR_ID_MEDIATEK, 0x0616),
+		.driver_data = (kernel_ulong_t)MT7921_FIRMWARE_WM },
 	{ },
 };
 
@@ -253,9 +257,11 @@ static int mt7921_pci_probe(struct pci_dev *pdev,
 		.fw_own = mt7921e_mcu_fw_pmctrl,
 	};
 
+	struct ieee80211_ops *ops;
 	struct mt76_bus_ops *bus_ops;
 	struct mt7921_dev *dev;
 	struct mt76_dev *mdev;
+	u8 features;
 	int ret;
 
 	ret = pcim_enable_device(pdev);
@@ -279,8 +285,28 @@ static int mt7921_pci_probe(struct pci_dev *pdev,
 	if (mt7921_disable_aspm)
 		mt76_pci_disable_aspm(pdev);
 
-	mdev = mt76_alloc_device(&pdev->dev, sizeof(*dev), &mt7921_ops,
-				 &drv_ops);
+	features = mt7921_check_offload_capability(&pdev->dev, (const char *)
+						   id->driver_data);
+	ops = devm_kmemdup(&pdev->dev, &mt7921_ops, sizeof(mt7921_ops),
+			   GFP_KERNEL);
+	if (!ops) {
+		ret = -ENOMEM;
+		goto err_free_pci_vec;
+	}
+
+	if (!(features & MT7921_FW_CAP_CNM)) {
+		ops->remain_on_channel = NULL;
+		ops->cancel_remain_on_channel = NULL;
+		ops->add_chanctx = NULL;
+		ops->remove_chanctx = NULL;
+		ops->change_chanctx = NULL;
+		ops->assign_vif_chanctx = NULL;
+		ops->unassign_vif_chanctx = NULL;
+		ops->mgd_prepare_tx = NULL;
+		ops->mgd_complete_tx = NULL;
+	}
+
+	mdev = mt76_alloc_device(&pdev->dev, sizeof(*dev), ops, &drv_ops);
 	if (!mdev) {
 		ret = -ENOMEM;
 		goto err_free_pci_vec;
@@ -289,8 +315,8 @@ static int mt7921_pci_probe(struct pci_dev *pdev,
 	pci_set_drvdata(pdev, mdev);
 
 	dev = container_of(mdev, struct mt7921_dev, mt76);
+	dev->fw_features = features;
 	dev->hif_ops = &mt7921_pcie_ops;
-
 	mt76_mmio_init(&dev->mt76, pcim_iomap_table(pdev)[0]);
 	tasklet_init(&dev->irq_tasklet, mt7921_irq_tasklet, (unsigned long)dev);
 
@@ -358,9 +384,9 @@ static void mt7921_pci_remove(struct pci_dev *pdev)
 	pci_free_irq_vectors(pdev);
 }
 
-#ifdef CONFIG_PM
-static int mt7921_pci_suspend(struct pci_dev *pdev, pm_message_t state)
+static int mt7921_pci_suspend(struct device *device)
 {
+	struct pci_dev *pdev = to_pci_dev(device);
 	struct mt76_dev *mdev = pci_get_drvdata(pdev);
 	struct mt7921_dev *dev = container_of(mdev, struct mt7921_dev, mt76);
 	struct mt76_connac_pm *pm = &dev->pm;
@@ -391,8 +417,6 @@ static int mt7921_pci_suspend(struct pci_dev *pdev, pm_message_t state)
 		napi_disable(&mdev->napi[i]);
 	}
 
-	pci_enable_wake(pdev, pci_choose_state(pdev, state), true);
-
 	/* wait until dma is idle  */
 	mt76_poll(dev, MT_WFDMA0_GLO_CFG,
 		  MT_WFDMA0_GLO_CFG_TX_DMA_BUSY |
@@ -409,11 +433,6 @@ static int mt7921_pci_suspend(struct pci_dev *pdev, pm_message_t state)
 	tasklet_kill(&dev->irq_tasklet);
 
 	err = mt7921_mcu_fw_pmctrl(dev);
-	if (err)
-		goto restore_napi;
-
-	pci_save_state(pdev);
-	err = pci_set_power_state(pdev, pci_choose_state(pdev, state));
 	if (err)
 		goto restore_napi;
 
@@ -439,18 +458,13 @@ restore_suspend:
 	return err;
 }
 
-static int mt7921_pci_resume(struct pci_dev *pdev)
+static int mt7921_pci_resume(struct device *device)
 {
+	struct pci_dev *pdev = to_pci_dev(device);
 	struct mt76_dev *mdev = pci_get_drvdata(pdev);
 	struct mt7921_dev *dev = container_of(mdev, struct mt7921_dev, mt76);
 	struct mt76_connac_pm *pm = &dev->pm;
 	int i, err;
-
-	err = pci_set_power_state(pdev, PCI_D0);
-	if (err)
-		return err;
-
-	pci_restore_state(pdev);
 
 	err = mt7921_mcu_drv_pmctrl(dev);
 	if (err < 0)
@@ -492,17 +506,31 @@ failed:
 
 	return err;
 }
-#endif /* CONFIG_PM */
+
+static void mt7921_pci_shutdown(struct pci_dev *pdev)
+{
+	struct mt76_dev *mdev = pci_get_drvdata(pdev);
+	struct mt7921_dev *dev = container_of(mdev, struct mt7921_dev, mt76);
+	struct mt76_connac_pm *pm = &dev->pm;
+
+	cancel_delayed_work_sync(&pm->ps_work);
+	cancel_work_sync(&pm->wake_work);
+
+	/* chip cleanup before reboot */
+	mt7921_mcu_drv_pmctrl(dev);
+	mt7921_dma_cleanup(dev);
+	mt7921_wfsys_reset(dev);
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(mt7921_pm_ops, mt7921_pci_suspend, mt7921_pci_resume);
 
 static struct pci_driver mt7921_pci_driver = {
 	.name		= KBUILD_MODNAME,
 	.id_table	= mt7921_pci_device_table,
 	.probe		= mt7921_pci_probe,
 	.remove		= mt7921_pci_remove,
-#ifdef CONFIG_PM
-	.suspend	= mt7921_pci_suspend,
-	.resume		= mt7921_pci_resume,
-#endif /* CONFIG_PM */
+	.shutdown	= mt7921_pci_shutdown,
+	.driver.pm	= pm_sleep_ptr(&mt7921_pm_ops),
 };
 
 module_pci_driver(mt7921_pci_driver);
